@@ -25,36 +25,36 @@ struct PlayerRespawnData
     bool inDungeon;
 };
 
-std::vector<PlayerRespawnData> respawnData;
+extern std::vector<PlayerRespawnData> respawnData;
 
-bool drEnabled;
-float respawnHpPct;
+extern bool drEnabled;
+extern float respawnHpPct;
 
 class DSPlayerScript : public PlayerScript
 {
 public:
-    DSPlayerScript() : PlayerScript("DSPlayerScript") { }
+    DSPlayerScript() : PlayerScript("DSPlayerScript") {}
 
 private:
     std::vector<ObjectGuid> playersToTeleport;
-    bool IsInsideDungeonRaid(Player* /*player*/);
-    void ResurrectPlayer(Player* /*player*/);
-    PlayerRespawnData* GetOrCreateRespawnData(Player* /*player*/);
-    void CreateRespawnData(Player* /*player*/);
-    void OnPlayerReleasedGhost(Player* /*player*/) override;
-    bool OnBeforeTeleport(Player* /*player*/, uint32 /*mapid*/, float /*x*/, float /*y*/, float /*z*/, float /*orientation*/, uint32 /*options*/, Unit* /*target*/) override;
-    void OnMapChanged(Player* /*player*/) override;
-    void OnLogin(Player* /*player*/) override;
-    void OnLogout(Player* /*player*/) override;
+    bool IsInsideDungeonRaid(Player* player);
+    void ResurrectPlayer(Player* player);
+    PlayerRespawnData* GetOrCreateRespawnData(Player* player);
+    void CreateRespawnData(Player* player);
+    void OnPlayerReleasedGhost(Player* player) override;
+    bool OnPlayerBeforeTeleport(Player* player, uint32 mapid, float x, float y, float z, float orientation, uint32 options, Unit* target) override;
+    void OnPlayerMapChanged(Player* player) override;  // заменили OnMapChanged на OnPlayerMapChanged
+    void OnPlayerLogin(Player* player) override;
+    void OnPlayerLogout(Player* player) override;
 };
 
 class DSWorldScript : public WorldScript
 {
 public:
-    DSWorldScript() : WorldScript("DSWorldScript") { }
+    DSWorldScript() : WorldScript("DSWorldScript") {}
 
 private:
-    void OnAfterConfigLoad(bool /*reload*/) override;
+    void OnAfterConfigLoad(bool reload) override;
     void OnShutdown() override;
     void SaveRespawnData();
 };
