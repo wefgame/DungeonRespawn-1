@@ -1,37 +1,32 @@
 #include "DungeonRespawn.h"
+#include "Player.h"
+#include "World.h"
+#include "ScriptMgr.h"
+#include "Config.h"           
+#include "Chat.h"
+#include "DatabaseEnv.h"
+#include <algorithm>
+
+std::vector<PlayerRespawnData> respawnData;
+bool drEnabled = false;
+float respawnHpPct = 50.0f;
 
 bool DSPlayerScript::IsInsideDungeonRaid(Player* player)
 {
     if (!player)
-    {
         return false;
-    }
-
     Map* map = player->GetMap();
     if (!map)
-    {
         return false;
-    }
-
-    if (!map->IsDungeon() && !map->IsRaid())
-    {
-        return false;
-    }
-
-    return true;
+    return map->IsDungeon() || map->IsRaid();
 }
+
 void DSPlayerScript::OnPlayerReleasedGhost(Player* player)
 {
     if (!drEnabled)
-    {
         return;
-    }
-
     if (!IsInsideDungeonRaid(player))
-    {
         return;
-    }
-
     playersToTeleport.push_back(player->GetGUID());
 }
 
@@ -41,75 +36,82 @@ void DSPlayerScript::ResurrectPlayer(Player* player)
     player->SpawnCorpseBones();
 }
 
-bool DSPlayerScript::OnBeforeTeleport(Player* player, uint32 mapid, float /*x*/, float /*y*/, float /*z*/, float /*orientation*/, uint32 /*options*/, Unit* /*target*/)
+bool DSPlayerScript::OnPlayerBeforeTeleport(Player* player, uint32 mapid, float /*x*/, float /*y*/, float /*z*/, float /*orientation*/, uint32 /*options*/, Unit* /*target*/)
 {
-    if (!drEnabled)
-    {
+    if (!drEnabled || !player)
         return true;
-    }
-
-    if (!player)
-    {
-        return true;
-    }
-
     if (player->GetMapId() != mapid)
     {
         auto prData = GetOrCreateRespawnData(player);
         prData->isTeleportingNewMap = true;
     }
-
     if (!IsInsideDungeonRaid(player))
-    {
         return true;
-    }
-
     if (!player->isDead())
-    {
         return true;
-    }
 
-    GuidVector::iterator itToRemove;
-    bool canRestore = false;
-
-    for (auto it = playersToTeleport.begin(); it != playersToTeleport.end(); ++it)
-    {
-        if (*it == player->GetGUID())
-        {
-            itToRemove = it;
-            canRestore = true;
-            break;
-        }
-    }
-
-    if (!canRestore)
-    {
+    auto it = std::find(playersToTeleport.begin(), playersToTeleport.end(), player->GetGUID());
+    if (it == playersToTeleport.end())
         return true;
-    }
 
-    playersToTeleport.erase(itToRemove);
+    playersToTeleport.erase(it);
 
     auto prData = GetOrCreateRespawnData(player);
     if (prData)
     {
-        //Invalid Player Restore data, use default behaviour.
         if (prData->dungeon.map == -1)
-        {
             return true;
-        }
-
         if (prData->dungeon.map != int32(player->GetMapId()))
-        {
             return true;
-        }
-
         player->TeleportTo(prData->dungeon.map, prData->dungeon.x, prData->dungeon.y, prData->dungeon.z, prData->dungeon.o);
         ResurrectPlayer(player);
         return false;
     }
-
     return true;
 }
+
+void DSPlayerScript::OnPlayerMapChanged(Player* player)
+{
+    if (!player)
+        return;
+
+    auto prData = GetOrCreateRespawnData(player);
+    if (!prData)
+        return;
+
+    bool inDungeon = IsInsideDungeonRaid(player);
+    prData->inDungeon = inDungeon;
+
+    if (!inDungeon)
+        return;
+
+    if (!prData->isTeleportingNewMap)
+        return;
+
+    prData->dungeon.map = player->GetMapId();
+    prData->dungeon.x = player->GetPositionX();
+    prData->dungeon.y = player->GetPositionY();
+    prData->dungeon.z = player->GetPositionZ();
+    prData->dungeon.o = player->GetOrientation();
+
+    prData->isTeleportingNewMap = false;
+}
+
+void DSPlayerScript::OnPlayerLogin(Player* player)
+{
+    if (!player)
+        return;
+    GetOrCreateRespawnData(player);
+}
+
+void DSPlayerScript::OnPlayerLogout(Player* player)
+{
+    if (!player)
+        return;
+    auto it = std::remove(playersToTeleport.begin(), playersToTeleport.end(), player->GetGUID());
+    playersToTeleport.erase(it, playersToTeleport.end());
+}
+
 
 void DSWorldScript::OnAfterConfigLoad(bool reload)
 {
@@ -123,15 +125,12 @@ void DSWorldScript::OnAfterConfigLoad(bool reload)
     respawnHpPct = sConfigMgr->GetOption<float>("DungeonRespawn.RespawnHealthPct", 50.0f);
 
     QueryResult qResult = CharacterDatabase.Query("SELECT `guid`, `map`, `x`, `y`, `z`, `o` FROM `dungeonrespawn_playerinfo`");
-
     if (qResult)
     {
         uint32 dataCount = 0;
-
         do
         {
             Field* fields = qResult->Fetch();
-
             PlayerRespawnData prData;
             DungeonData dData;
             prData.guid = ObjectGuid(fields[0].Get<uint64>());
@@ -143,18 +142,14 @@ void DSWorldScript::OnAfterConfigLoad(bool reload)
             prData.dungeon = dData;
             prData.isTeleportingNewMap = false;
             prData.inDungeon = false;
-
             respawnData.push_back(prData);
-
             dataCount++;
         } while (qResult->NextRow());
-
         LOG_INFO("module", "Loaded '{}' rows from 'dungeonrespawn_playerinfo' table.", dataCount);
     }
     else
     {
         LOG_INFO("module", "Loaded '0' rows from 'dungeonrespawn_playerinfo' table.");
-        return;
     }
 }
 
@@ -193,54 +188,13 @@ PlayerRespawnData* DSPlayerScript::GetOrCreateRespawnData(Player* player)
 {
     for (auto it = respawnData.begin(); it != respawnData.end(); ++it)
     {
-        if (it != respawnData.end())
+        if (player->GetGUID() == it->guid)
         {
-            if (player->GetGUID() == it->guid)
-            {
-                return &(*it);
-            }
+            return &(*it);
         }
     }
-
     CreateRespawnData(player);
-
     return GetOrCreateRespawnData(player);
-}
-
-void DSPlayerScript::OnMapChanged(Player* player)
-{
-    if (!player)
-    {
-        return;
-    }
-
-    auto prData = GetOrCreateRespawnData(player);
-
-    if (!prData)
-    {
-        return;
-    }
-
-    bool inDungeon = IsInsideDungeonRaid(player);
-    prData->inDungeon = inDungeon;
-
-    if (!inDungeon)
-    {
-        return;
-    }
-
-    if (!prData->isTeleportingNewMap)
-    {
-        return;
-    }
-
-    prData->dungeon.map = player->GetMapId();
-    prData->dungeon.x = player->GetPositionX();
-    prData->dungeon.y = player->GetPositionY();
-    prData->dungeon.z = player->GetPositionZ();
-    prData->dungeon.o = player->GetOrientation();
-
-    prData->isTeleportingNewMap = false;
 }
 
 void DSPlayerScript::CreateRespawnData(Player* player)
@@ -257,34 +211,8 @@ void DSPlayerScript::CreateRespawnData(Player* player)
     newPrData.guid = player->GetGUID();
     newPrData.isTeleportingNewMap = false;
     newPrData.inDungeon = false;
-    
+
     respawnData.push_back(newPrData);
-}
-
-void DSPlayerScript::OnLogin(Player* player)
-{
-    if (!player)
-    {
-        return;
-    }
-
-    GetOrCreateRespawnData(player);
-}
-
-void DSPlayerScript::OnLogout(Player* player)
-{
-    if (!player)
-    {
-        return;
-    }
-
-    for (auto it = playersToTeleport.begin(); it < playersToTeleport.end(); ++it)
-    {
-        if (player->GetGUID() == (*it))
-        {
-            playersToTeleport.erase(it);
-        }
-    }
 }
 
 void SC_AddDungeonRespawnScripts()
